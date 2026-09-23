@@ -4,7 +4,7 @@ clc;
 clear;
 close all;
 
-%% TOUCHSTONE BASED SECURITY SYSTEM
+%% TOUCHSTONE BASED SECURITY SYSTEM (signal -> noise -> filter -> decode -> compare)
 
 disp('======================================');
 disp(' TOUCHSTONE SECURITY SYSTEM');
@@ -15,68 +15,87 @@ disp('======================================');
 % Enter the stored password
 password = input('Enter the stored password (e.g. [1 3 2 4]): ');
 
-% Enter the user sequence
+% Enter the user sequence (this is what gets ENCODED into a signal)
 entered = input('Enter the touch sequence (e.g. [1 3 2 4]): ');
 
 %% Sampling parameters
 
-fs = 1000; % Sampling frequency
-touch_time = 0.5; % Duration of each touch
-gap_time = 0.5; % Gap between touches
+fs = 1000;          % Sampling frequency (Hz)
+touch_time = 0.5;   % Duration of each touch (s)
+gap_time = 0.5;      % Gap between touches (s)
 
 samples_touch = round(fs * touch_time);
 samples_gap = round(fs * gap_time);
 
-%% Generate Touch Signal
+%% Generate Touch Signal (encode digits as voltage plateaus)
 
 signal = [];
+touch_start_idx = zeros(1, length(entered)); % remember where each touch begins
 
 for i = 1:length(entered)
 
-    % Generate touch pulse
-    pulse = entered(i) * ones(1, samples_touch);
+    touch_start_idx(i) = length(signal) + 1;
 
-    % Gap between touches
+    pulse = entered(i) * ones(1, samples_touch);
     gap = zeros(1, samples_gap);
 
-    signal = [signal pulse gap];
-
+    signal = [signal pulse gap]; %#ok<AGROW>
 end
 
 %% Time axis
 
 t = (0:length(signal)-1)/fs;
 
-%% Add Noise
+%% Add Noise (simulate a real, imperfect sensor/channel)
 
-noise = 0.3 * randn(size(signal));
-
+noise_level = 0.3;
+noise = noise_level * randn(size(signal));
 noisy_signal = signal + noise;
 
-%% Filtering
+%% Filtering (moving-average low-pass filter to fight the noise)
 
 window = 50;
-
 filtered_signal = movmean(noisy_signal, window);
 
-%% Display Password Information
+%% DECODE the filtered signal back into a digit sequence
+% This is the step the original script was missing: instead of comparing
+% "entered" directly, we measure what the system actually RECOVERED after
+% noise + filtering, and compare THAT to the password.
+
+decoded = zeros(1, length(entered));
+
+for i = 1:length(entered)
+    idx_start = touch_start_idx(i);
+    idx_end = idx_start + samples_touch - 1;
+
+    % Average the filtered signal over the touch window, ignoring the
+    % first/last few samples where the moving-average filter is still
+    % transitioning between plateau and gap (edge effects).
+    edge = round(window/2);
+    seg = filtered_signal(idx_start + edge : idx_end - edge);
+
+    avg_value = mean(seg);
+    decoded(i) = round(avg_value); % nearest integer = the recovered digit
+end
+
+%% Display Information
 
 disp(' ');
 disp('--------------------------------------');
-disp(['Stored Password : ', num2str(password)]);
-disp(['Entered Sequence : ', num2str(entered)]);
+disp(['Stored Password       : ', num2str(password)]);
+disp(['Entered Sequence      : ', num2str(entered)]);
+disp(['Decoded from Signal   : ', num2str(decoded)]);
 disp('--------------------------------------');
 
-%% Compare Password
+%% Compare Password (now against the DECODED sequence, not the raw input)
 
-if isequal(password, entered)
-
+if isequal(password, decoded)
     disp('ACCESS GRANTED');
-
 else
-
     disp('ACCESS DENIED');
-
+    if ~isequal(entered, decoded)
+        disp('(Note: noise corrupted at least one digit during transmission!)');
+    end
 end
 
 %% Plot Signals
@@ -84,11 +103,12 @@ end
 figure;
 
 subplot(3,1,1);
-plot(t, signal);
+plot(t, signal, 'LineWidth', 1.2);
 grid on;
 xlabel('Time (seconds)');
 ylabel('Amplitude');
-title('Original Touch Signal');
+title('Original Touch Signal (encoded digits)');
+ylim([-1 10]);
 
 subplot(3,1,2);
 plot(t, noisy_signal);
@@ -96,12 +116,18 @@ grid on;
 xlabel('Time (seconds)');
 ylabel('Amplitude');
 title('Noisy Touch Signal');
+ylim([-2 11]);
 
 subplot(3,1,3);
-plot(t, filtered_signal);
+plot(t, filtered_signal, 'LineWidth', 1.2);
 grid on;
 xlabel('Time (seconds)');
 ylabel('Amplitude');
-title('Filtered Touch Signal');
-
-
+title('Filtered Touch Signal (recovered digits shown as dashed markers)');
+ylim([-1 10]);
+hold on;
+for i = 1:length(entered)
+    idx_mid = touch_start_idx(i) + round(samples_touch/2);
+    plot(t(idx_mid), decoded(i), 'ro', 'MarkerFaceColor', 'r');
+end
+hold off;
